@@ -44,7 +44,6 @@ SCAN_POOLS = {
     "🟢 PCB 電子之母": {"2383.TW": "台光電", "6274.TW": "台燿", "3037.TW": "欣興", "8046.TW": "南電", "2368.TW": "金像電", "2313.TW": "華通", "4958.TW": "臻鼎-KY",
         "2355.TW": "敬鵬", "2367.TW": "燿華", "6269.TW": "台郡"},
     "💰 熱門 ETF": {"0056.TW": "元大高股息", "00878.TW": "國泰永續高股息", "00929.TW": "復華台灣科技優息", "00713.TW": "元大台灣高息低波"}
-
 }
 
 TW_STOCKS = {"✍️ 自訂輸入": ""}
@@ -158,11 +157,11 @@ def run_backtest(df, strategy_choice, sl_pct, tp_pct, initial_capital=100000):
     return df_bt.fillna(initial_capital)
 
 # --- 介面設定 ---
-st.set_page_config(page_title="AI 股票戰艦 v23.0", layout="wide")
+st.set_page_config(page_title="AI 股票戰艦 v23.1", layout="wide")
 app_mode = st.sidebar.radio("切換模式", ["🔍 單股深度分析", "🚀 AI 自動巡航掃描"])
 
 if app_mode == "🔍 單股深度分析":
-    st.title("📊 智能股票深度分析 (預熱引擎版)")
+    st.title("📊 智能股票深度分析 (穩定預熱版)")
     st.sidebar.header("1. 分析設定")
     sel = st.sidebar.selectbox("快速選擇股票", list(TW_STOCKS.keys()))
     ticker = st.sidebar.text_input("輸入代碼", value="2330.TW") if sel == "✍️ 自訂輸入" else TW_STOCKS[sel]
@@ -171,12 +170,12 @@ if app_mode == "🔍 單股深度分析":
     inv_map = {"日K (1d)": "1d", "15分K (15m)": "15m", "5分K (5m)": "5m"}
     interval_val = inv_map[interval_choice]
 
-    # 💡 找回自訂日期與選單
     p_map = {"3年": 1095, "1年": 365, "6個月": 180, "3個月": 90, "1個月": 30, "20日": 20, "10日": 10, "5日": 5, "1日": 1, "✍️ 自訂": 0}
     default_index = 1 if interval_val == "1d" else 7 
     p_sel = st.sidebar.selectbox("查詢期間", list(p_map.keys()), index=default_index)
     
-    end_d = st.sidebar.date_input("結束日期 (預設今日)", datetime.now())
+    # 💡 修復：統一讓時間產生純粹的 date 格式
+    end_d = st.sidebar.date_input("結束日期 (預設今日)", datetime.now().date())
     
     if p_sel == "✍️ 自訂":
         start_d = st.sidebar.date_input("開始日期", end_d - timedelta(days=30))
@@ -184,12 +183,12 @@ if app_mode == "🔍 單股深度分析":
         start_d = end_d - timedelta(days=p_map[p_sel])
         st.sidebar.text(f"📅 開始日期: {start_d.strftime('%Y-%m-%d')}")
 
-    # 💡 核心：資料預熱引擎，往回多抓 60 天給指標計算用
     buffer_days = 60 if interval_val == "1d" else 15
     fetch_start = start_d - timedelta(days=buffer_days)
 
     if interval_val in ["5m", "15m"]:
-        min_allowed = datetime.now() - timedelta(days=59)
+        # 💡 修復：把包含時分秒的 datetime 轉換成純粹的 date
+        min_allowed = (datetime.now() - timedelta(days=59)).date() 
         if fetch_start < min_allowed: fetch_start = min_allowed
         if start_d < min_allowed: 
             start_d = min_allowed
@@ -209,14 +208,12 @@ if app_mode == "🔍 單股深度分析":
             
             if cp: st.metric(f"⚡ {ticker.upper()}{display_name} 最新報價", f"{cp:.2f}", f"{ch:.2f} ({cpct:.2f}%)")
             
-            # 用加了 buffer 的 fetch_start 抓資料
             df = fetch_stock_data(ticker, fetch_start, end_d + timedelta(days=1), interval=interval_val)
             if not df.empty:
                 if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.droplevel(1)
                 df = calculate_indicators(df)
                 df_bt = run_backtest(df, strat, sl/100, tp/100)
                 
-                # 💡 關鍵：切出使用者真正要看的日期區間 (隱藏前面的預熱資料)
                 start_dt = pd.to_datetime(start_d)
                 end_dt = pd.to_datetime(end_d) + timedelta(days=1)
                 if df_bt.index.tz is not None:
@@ -235,7 +232,6 @@ if app_mode == "🔍 單股深度分析":
                     tab1, tab2, tab3 = st.tabs(["📈 技術分析 (量價與指標)", "🏢 基本面與籌碼", "⏱️ 績效回測報告"])
                     
                     with tab1:
-                        # 全面使用 df_disp (切好的乾淨資料) 畫圖
                         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
                         fig.add_trace(go.Scatter(x=df_disp.index, y=df_disp['Upper'], line=dict(color='rgba(173, 204, 255, 0.2)'), showlegend=False), row=1, col=1)
                         fig.add_trace(go.Scatter(x=df_disp.index, y=df_disp['Lower'], line=dict(color='rgba(173, 204, 255, 0.2)'), fill='tonexty', fillcolor='rgba(173, 204, 255, 0.1)', name='布林通道'), row=1, col=1)
