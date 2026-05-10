@@ -59,7 +59,6 @@ SCAN_POOLS = {
     "💰 熱門 ETF": {"0056.TW": "元大高股息", "00878.TW": "國泰永續高股息", "00929.TW": "復華台灣科技優息", "00713.TW": "元大台灣高息低波"}
 }
 
-# 💡 修復：補回纏論簡化版
 STRATEGIES = [
     "均線黃金交叉 (20MA & 50MA)", "RSI 超買超賣 (30買/70賣)", 
     "MACD 黃金交叉/死亡交叉", "纏論核心 (底背離+二買策略)",
@@ -95,7 +94,6 @@ def calculate_indicators(df):
     df['MACD_Hist'] = df['MACD'] - df['Signal_Line']
     return df
 
-# 💡 修復：六大策略邏輯精準隔離版
 def generate_signals(df, strategy_choice):
     df_bt = df.copy()
     df_bt['Signal'] = np.nan 
@@ -123,7 +121,6 @@ def generate_signals(df, strategy_choice):
         df_bt.loc[div_buy | sec_buy, 'Signal'] = 1
         df_bt.loc[df_bt['MACD'] < df_bt['Signal_Line'], 'Signal'] = 0
         
-    # 💡 修復：補回纏論簡化版邏輯
     elif strategy_choice == "纏論簡化版 (MACD 底背馳)":
         window = 20
         low_lookback = df_bt['Low'].rolling(window=window).min()
@@ -156,7 +153,7 @@ def run_backtest(df, strategy_choice, sl_pct, tp_pct, initial_capital=100000):
     return df_bt.fillna(initial_capital)
 
 # --- 介面設定 ---
-st.set_page_config(page_title="AI 股票戰艦 v19.0", layout="wide")
+st.set_page_config(page_title="AI 股票戰艦 v19.1", layout="wide")
 app_mode = st.sidebar.radio("切換模式", ["🔍 單股深度分析", "🚀 AI 自動巡航掃描"])
 
 if app_mode == "🔍 單股深度分析":
@@ -203,7 +200,9 @@ if app_mode == "🔍 單股深度分析":
                 
                 buy_pts = df_bt[df_bt['Action_Buy']]; sell_pts = df_bt[df_bt['Action_Sell']]
                 fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.97, mode='markers', marker=dict(symbol='triangle-up', color='#00FF00', size=15), name='買入'), row=1, col=1)
-                fig.add_trace(go.Scatter(x=sells.index, y=sells['High']*1.03, mode='markers', marker=dict(symbol='triangle-down', color='#FF4B4B', size=15), name='賣出'), row=1, col=1)
+                
+                # 💡 修復的地方在這裡：原本寫成 sells.index，現在修正回 sell_pts.index
+                fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.03, mode='markers', marker=dict(symbol='triangle-down', color='#FF4B4B', size=15), name='賣出'), row=1, col=1)
                 
                 vol_colors = ['#d62728' if row['Close'] < row['Open'] else '#2ca02c' for idx, row in df.iterrows()]
                 fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name='成交量'), row=2, col=1)
