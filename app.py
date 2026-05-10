@@ -9,6 +9,19 @@ from datetime import datetime, timedelta
 if 'search_history' not in st.session_state:
     st.session_state['search_history'] = []
 
+# --- 新增：資料獲取與快取機制 (防封鎖核心) ---
+# ttl=3600 代表這份資料會在伺服器存活 1 小時 (3600秒)
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_stock_data(ticker, start_date, end_date):
+    return yf.download(ticker, start=start_date, end=end_date)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_stock_info(ticker):
+    try:
+        return yf.Ticker(ticker).info
+    except:
+        return {} # 萬一抓不到基本面，回傳空字典，防止整個網站崩潰
+
 # --- 1. 核心計算函數 ---
 def calculate_indicators(df):
     delta = df['Close'].diff()
@@ -83,7 +96,7 @@ def run_backtest_with_sltp(df, strategy_choice, sl_pct, tp_pct, initial_capital=
 
 # --- 2. 系統介面與參數設定 ---
 st.set_page_config(page_title="AI 股票分析系統", layout="wide")
-st.title("📊 智能股票分析系統 v6.4")
+st.title("📊 智能股票分析系統 v6.5 (防限速版)")
 
 st.sidebar.header("1. 基礎設定")
 ticker = st.sidebar.text_input("輸入股票代碼", value="NVDA") 
@@ -100,26 +113,23 @@ strategy_choice = st.sidebar.selectbox(
 tp_input = st.sidebar.slider("停利目標 (%)", min_value=5, max_value=100, value=20, step=5)
 sl_input = st.sidebar.slider("停損底線 (%)", min_value=1, max_value=50, value=10, step=1)
 
-# 按鈕觸發區
 if st.sidebar.button("開始分析"):
-    # --- 記憶歷史查詢代碼 ---
     ticker_upper = ticker.upper()
     if ticker_upper not in st.session_state['search_history']:
-        st.session_state['search_history'].insert(0, ticker_upper) # 加到列表最前面
-        # 保持最多記憶 5 檔股票
+        st.session_state['search_history'].insert(0, ticker_upper)
         if len(st.session_state['search_history']) > 5:
             st.session_state['search_history'].pop()
     else:
-        # 如果已經查過，把它移到最前面
         st.session_state['search_history'].remove(ticker_upper)
         st.session_state['search_history'].insert(0, ticker_upper)
 
     with st.spinner('正在獲取數據與進行運算...'):
-        df = yf.download(ticker, start=start_date, end=end_date)
-        stock_info = yf.Ticker(ticker).info
+        # 💡 核心修改：改用我們寫好的「快取函數」來拿資料
+        df = fetch_stock_data(ticker, start_date, end_date)
+        stock_info = fetch_stock_info(ticker)
         
         if df.empty:
-            st.error("找不到數據，請確認代碼是否正確。")
+            st.error("找不到數據或暫時被 Yahoo 阻擋，請稍後再試。")
         else:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.droplevel(1)
@@ -182,7 +192,7 @@ if st.sidebar.button("開始分析"):
                 
                 st.markdown("---")
                 st.write("**公司簡介:**")
-                st.write(stock_info.get('longBusinessSummary', '無公司簡介資料。'))
+                st.write(stock_info.get('longBusinessSummary', '無公司簡介資料 (可能暫時被 Yahoo 限制)。'))
 
             with tab3:
                 fig_bt = go.Figure()
@@ -212,11 +222,9 @@ if st.sidebar.button("開始分析"):
                 st.write("多數投資人會利用快線與慢線的交叉來尋找買賣點：")
                 st.markdown("* ✅ **黃金交叉（買進訊號）：** MACD 快線由下往上穿過 Signal 慢線，且柱狀圖由負轉正。這代表短期動能轉強，股價可能準備發動一波漲勢。\n* 🔻 **死亡交叉（賣出訊號）：** MACD 快線由上往下穿過 Signal 慢線，且柱狀圖由正轉負。這代表短期動能轉弱，股價可能面臨回檔或下跌。")
 
-# --- 顯示歷史紀錄 (放在側邊欄最下方) ---
 st.sidebar.markdown("---")
 st.sidebar.write("🕒 **最近查詢紀錄**")
 if st.session_state['search_history']:
-    # 把歷史紀錄用逗號串接起來顯示
     st.sidebar.info(", ".join(st.session_state['search_history']))
 else:
     st.sidebar.caption("尚無紀錄")
