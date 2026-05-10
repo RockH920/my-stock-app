@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objs as go
+from plotly.subplots import make_subplots # 💡 新增：用來製作上下疊加的子圖表
 from datetime import datetime, timedelta
 import time
 import os
@@ -19,10 +20,8 @@ if 'scan_index' not in st.session_state:
 
 def load_history():
     if os.path.exists(DB_FILE):
-        try:
-            return pd.read_csv(DB_FILE)
-        except:
-            return pd.DataFrame(columns=["觸發時間", "板塊", "代碼", "股票名稱", "收盤價", "觸發策略"])
+        try: return pd.read_csv(DB_FILE)
+        except: return pd.DataFrame(columns=["觸發時間", "板塊", "代碼", "股票名稱", "收盤價", "觸發策略"])
     else:
         return pd.DataFrame(columns=["觸發時間", "板塊", "代碼", "股票名稱", "收盤價", "觸發策略"])
 
@@ -41,16 +40,23 @@ def save_record_to_csv(new_df):
 # --- 股票清單與策略 ---
 TW_STOCKS = {
     "✍️ 自訂輸入": "", "2330.TW - 台積電": "2330.TW", "2317.TW - 鴻海": "2317.TW", 
-    "2454.TW - 聯發科": "2454.TW", "NVDA - 輝達": "NVDA", "TSLA - 特斯拉": "TSLA",
-    "AAPL - 蘋果": "AAPL", "0050.TW - 元大台灣50": "0050.TW"
+    "2454.TW - 聯發科": "2454.TW", "NVDA - 輝達": "NVDA", "TSLA - 特斯拉": "TSLA"
 }
 
 SCAN_POOLS = {
     "🏆 權值核心": {"2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科", "2382.TW": "廣達", "2881.TW": "富邦金"},
     "💻 AI 半導體": {"3231.TW": "緯創", "2356.TW": "英業達", "2376.TW": "技嘉", "3037.TW": "欣興", "6669.TW": "緯穎"},
     "🏦 金融族群": {"2886.TW": "兆豐金", "2884.TW": "玉山金", "2892.TW": "第一金", "2885.TW": "元大金", "5880.TW": "合庫金"},
-    "🚢 傳產重電": {"2603.TW": "長榮", "2609.TW": "陽明", "1519.TW": "華城", "1513.TW": "中興電", "2618.TW": "長榮航"},
-    "💰 熱門 ETF": {"0056.TW": "元大高股息", "00878.TW": "國泰永續高股息", "00929.TW": "復華台灣科技優息", "00919.TW": "群益精選高息"}
+    "🚢 航運艦隊": {"2603.TW": "長榮", "2609.TW": "陽明", "2615.TW": "萬海", 
+        "2637.TW": "慧洋-KY", "2606.TW": "裕民", 
+        "2618.TW": "長榮航", "2610.TW": "華航", "2646.TW": "星宇航空"},
+    "🔌 電子零組件": {"3017.TW": "奇鋐", "3324.TW": "雙鴻", "3653.TW": "健策", "2421.TW": "建準",
+        "3037.TW": "欣興", "2368.TW": "金像電", "2313.TW": "華通", "8046.TW": "南電",
+        "2327.TW": "國巨", "2492.TW": "華新科", 
+        "3533.TW": "嘉澤", "3023.TW": "信邦", "2392.TW": "正崴"},
+    "🟢 PCB 電子之母": {"2383.TW": "台光電", "6274.TW": "台燿", "3037.TW": "欣興", "8046.TW": "南電", "2368.TW": "金像電", "2313.TW": "華通", "4958.TW": "臻鼎-KY",
+        "2355.TW": "敬鵬", "2367.TW": "燿華", "6269.TW": "台郡"},
+    "💰 熱門 ETF": {"0056.TW": "元大高股息", "00878.TW": "國泰永續高股息", "00929.TW": "復華台灣科技優息", "00713.TW": "元大台灣高息低波"}
 }
 
 STRATEGIES = [
@@ -126,32 +132,27 @@ def generate_signals(df, strategy_choice):
 
 def run_backtest(df, strategy_choice, sl_pct, tp_pct, initial_capital=100000):
     df_bt = generate_signals(df.copy(), strategy_choice)
-    df_bt['Position'] = 0
-    df_bt['Action_Buy'] = False
-    df_bt['Action_Sell'] = False
+    df_bt['Position'] = 0; df_bt['Action_Buy'] = False; df_bt['Action_Sell'] = False
     pos, entry = 0, 0.0
     for i in range(1, len(df_bt)):
         curr = df_bt['Close'].iloc[i]
         sig = df_bt['Signal'].iloc[i-1]
         if pos == 1:
             if curr <= entry*(1-sl_pct) or curr >= entry*(1+tp_pct) or sig == 0:
-                pos = 0
-                df_bt.iloc[i, df_bt.columns.get_loc('Action_Sell')] = True
+                pos = 0; df_bt.iloc[i, df_bt.columns.get_loc('Action_Sell')] = True
         elif pos == 0 and sig == 1:
-            pos, entry = 1, curr
-            df_bt.iloc[i, df_bt.columns.get_loc('Action_Buy')] = True
+            pos, entry = 1, curr; df_bt.iloc[i, df_bt.columns.get_loc('Action_Buy')] = True
         df_bt.iloc[i, df_bt.columns.get_loc('Position')] = pos
     df_bt['Strategy_Value'] = initial_capital * (1 + (df_bt['Position'].shift(1).fillna(0) * df_bt['Close'].pct_change())).cumprod()
     df_bt['Market_Value'] = initial_capital * (1 + df_bt['Close'].pct_change()).cumprod()
     return df_bt.fillna(initial_capital)
 
 # --- 介面設定 ---
-st.set_page_config(page_title="AI 股票戰艦 v15.1", layout="wide")
+st.set_page_config(page_title="AI 股票戰艦 v16.0", layout="wide")
 app_mode = st.sidebar.radio("切換模式", ["🔍 單股深度分析", "🚀 AI 自動巡航掃描"])
 
-# --- 模式 1: 單股深度分析 ---
 if app_mode == "🔍 單股深度分析":
-    st.title("📊 智能股票深度分析 (找回完整版)")
+    st.title("📊 智能股票深度分析 (量價戰艦版)")
     st.sidebar.header("1. 分析設定")
     sel = st.sidebar.selectbox("快速選擇股票", list(TW_STOCKS.keys()))
     ticker = st.sidebar.text_input("代碼", value="2330.TW") if sel == "✍️ 自訂輸入" else TW_STOCKS[sel]
@@ -178,22 +179,35 @@ if app_mode == "🔍 單股深度分析":
                 if latest_sig == 1: st.success(f"🤖 建議：買進 / 持有 ({strat})")
                 else: st.warning(f"🤖 建議：賣出 / 觀望 ({strat})")
 
-                tab1, tab2, tab3, tab4 = st.tabs(["📈 技術分析", "🏢 基本面", "⏱️ 回測報告", "📖 教學"])
+                tab1, tab2, tab3 = st.tabs(["📈 技術分析 (量價)", "🏢 基本面與籌碼", "⏱️ 績效回測"])
                 with tab1:
-                    fig_k = go.Figure()
-                    fig_k.add_trace(go.Scatter(x=df.index, y=df['Upper'], line=dict(color='rgba(173, 204, 255, 0.2)'), showlegend=False))
-                    fig_k.add_trace(go.Scatter(x=df.index, y=df['Lower'], line=dict(color='rgba(173, 204, 255, 0.2)'), fill='tonexty', fillcolor='rgba(173, 204, 255, 0.1)', name='布林通道'))
-                    fig_k.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='K線'))
+                    # 💡 核心更新：使用 make_subplots 整合 K線與成交量
+                    fig_k = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                          vertical_spacing=0.03, row_heights=[0.7, 0.3])
+                    
+                    # Row 1: 布林通道與 K線
+                    fig_k.add_trace(go.Scatter(x=df.index, y=df['Upper'], line=dict(color='rgba(173, 204, 255, 0.2)'), showlegend=False), row=1, col=1)
+                    fig_k.add_trace(go.Scatter(x=df.index, y=df['Lower'], line=dict(color='rgba(173, 204, 255, 0.2)'), fill='tonexty', fillcolor='rgba(173, 204, 255, 0.1)', name='布林通道'), row=1, col=1)
+                    fig_k.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='K線'), row=1, col=1)
+                    
                     buys, sells = df_bt[df_bt['Action_Buy']], df_bt[df_bt['Action_Sell']]
-                    fig_k.add_trace(go.Scatter(x=buys.index, y=buys['Low']*0.97, mode='markers', marker=dict(symbol='triangle-up', color='#00FF00', size=15), name='買入'))
-                    fig_k.add_trace(go.Scatter(x=sells.index, y=sells['High']*1.03, mode='markers', marker=dict(symbol='triangle-down', color='#FF4B4B', size=15), name='賣出'))
-                    st.plotly_chart(fig_k.update_layout(height=600, xaxis_rangeslider_visible=False), use_container_width=True)
-                    st.plotly_chart(go.Figure(data=[go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#AB63FA'))]).update_layout(title="RSI", height=350, yaxis=dict(range=[0, 100])).add_hline(y=70).add_hline(y=30), use_container_width=True)
+                    fig_k.add_trace(go.Scatter(x=buys.index, y=buys['Low']*0.97, mode='markers', marker=dict(symbol='triangle-up', color='#00FF00', size=15), name='買入'), row=1, col=1)
+                    fig_k.add_trace(go.Scatter(x=sells.index, y=sells['High']*1.03, mode='markers', marker=dict(symbol='triangle-down', color='#FF4B4B', size=15), name='賣出'), row=1, col=1)
+                    
+                    # 💡 Row 2: 成交量 (紅綠分色顯示)
+                    vol_colors = ['#d62728' if row['Close'] < row['Open'] else '#2ca02c' for idx, row in df.iterrows()]
+                    fig_k.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name='成交量'), row=2, col=1)
+                    
+                    fig_k.update_layout(height=800, xaxis_rangeslider_visible=False, title=f"{ticker.upper()} 量價走勢圖與布林通道")
+                    st.plotly_chart(fig_k, use_container_width=True)
+                    
+                    # 其他指標保留
+                    st.plotly_chart(go.Figure(data=[go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#AB63FA'))]).update_layout(title="RSI 相對強弱指標", height=300, yaxis=dict(range=[0, 100])).add_hline(y=70).add_hline(y=30), use_container_width=True)
                     fig_m = go.Figure()
                     fig_m.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='快線'))
                     fig_m.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], name='慢線'))
                     fig_m.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], name='柱狀圖', marker_color=['#2ca02c' if v>=0 else '#d62728' for v in df['MACD_Hist']]))
-                    st.plotly_chart(fig_m.update_layout(title="MACD", height=400), use_container_width=True)
+                    st.plotly_chart(fig_m.update_layout(title="MACD 動能指標", height=350), use_container_width=True)
 
                 with tab2:
                     st.subheader("基本面與估值")
@@ -205,19 +219,13 @@ if app_mode == "🔍 單股深度分析":
                     if pe > 0 and eps > 0:
                         mx, mn = info.get('fiftyTwoWeekHigh', df['Close'].max())/eps, info.get('fiftyTwoWeekLow', df['Close'].min())/eps
                         st.plotly_chart(go.Figure(go.Indicator(mode="gauge+number", value=pe, title={'text': "P/E 歷史位階"}, gauge={'axis':{'range':[mn*0.8, mx*1.2]}, 'steps':[{'range':[0, mn+(mx-mn)*0.33], 'color':"lightgreen"}, {'range':[mn+(mx-mn)*0.66, 100], 'color':"salmon"}], 'threshold':{'line':{'color':"red", 'width':4}, 'value':pe}})).update_layout(height=280))
-                    st.write("**簡介:**", info.get('longBusinessSummary', '無資料'))
 
                 with tab3:
                     fm, fs = df_bt['Market_Value'].iloc[-1], df_bt['Strategy_Value'].iloc[-1]
                     st.subheader("回測結果")
                     st.metric("策略最終價值", f"${fs:,.0f}", f"${fs-fm:,.0f} (vs 大盤)")
                     st.plotly_chart(go.Figure().add_trace(go.Scatter(x=df_bt.index, y=df_bt['Market_Value'], name='大盤', line=dict(dash='dot'))).add_trace(go.Scatter(x=df_bt.index, y=df_bt['Strategy_Value'], name='策略', line=dict(width=3))), use_container_width=True)
-                
-                with tab4:
-                    st.header("📖 策略說明")
-                    st.markdown("""**均線黃金交叉**: 20MA > 50MA | **RSI**: <30買 >70賣 | **纏論**: 抓底背離與回踩不破底。""")
 
-# --- 模式 2: 自動巡航掃描 ---
 elif app_mode == "🚀 AI 自動巡航掃描":
     st.title("🚀 AI 自動選股雷達 (永久儲存版)")
     st_autorefresh(interval=300000, key="fscancounter")
