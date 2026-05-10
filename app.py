@@ -151,7 +151,7 @@ def run_backtest_with_sltp(df, strategy_choice, sl_pct, tp_pct, initial_capital=
 
 # --- 2. 介面設定 ---
 st.set_page_config(page_title="AI 股票分析系統", layout="wide")
-st.title("📊 智能股票分析系統 v10.0 by Rock)")
+st.title("📊 智能股票分析系統 v10.0 by Rock")
 
 # 側邊欄
 st.sidebar.header("1. 設定")
