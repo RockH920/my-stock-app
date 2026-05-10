@@ -102,32 +102,46 @@ def calculate_indicators(df):
 
 def generate_signals(df, strategy_choice):
     df_bt = df.copy()
-    df_bt['Signal'] = 0
+    # 預設先給 NaN，方便後續用 ffill (向前填充) 延續持有狀態
+    df_bt['Signal'] = np.nan 
+    
     if strategy_choice == "均線黃金交叉 (20MA & 50MA)":
         df_bt.loc[df_bt['SMA_20'] > df_bt['SMA_50'], 'Signal'] = 1
+        df_bt.loc[df_bt['SMA_20'] <= df_bt['SMA_50'], 'Signal'] = 0
+        
     elif strategy_choice == "RSI 超買超賣 (30買/70賣)":
-        df_bt['Signal'] = np.nan
         df_bt.loc[df_bt['RSI'] < 30, 'Signal'] = 1
         df_bt.loc[df_bt['RSI'] > 70, 'Signal'] = 0
-        df_bt['Signal'] = df_bt['Signal'].ffill().fillna(0)
+        
     elif strategy_choice == "MACD 黃金交叉/死亡交叉":
         df_bt.loc[df_bt['MACD'] > df_bt['Signal_Line'], 'Signal'] = 1
+        df_bt.loc[df_bt['MACD'] <= df_bt['Signal_Line'], 'Signal'] = 0
+        
     elif strategy_choice == "纏論核心 (底背離+二買策略)":
         low_20 = df_bt['Low'].rolling(window=20).min()
         hist_min_20 = df_bt['MACD_Hist'].rolling(window=20).min()
         div_buy = (df_bt['Low'] <= low_20) & (df_bt['MACD_Hist'] > hist_min_20.shift(1))
         last_low = df_bt['Low'].rolling(window=30).min().shift(5)
         sec_buy = (df_bt['Low'] > last_low) & (df_bt['MACD'] > df_bt['Signal_Line']) & (df_bt['MACD'].shift(1) < df_bt['Signal_Line'].shift(1))
+        
         df_bt.loc[div_buy | sec_buy, 'Signal'] = 1
+        # 纏論的賣出邏輯：MACD 死亡交叉
+        df_bt.loc[df_bt['MACD'] < df_bt['Signal_Line'], 'Signal'] = 0
+        
     elif strategy_choice == "纏論簡化版 (MACD 底背馳)":
         low_20 = df_bt['Low'].rolling(window=20).min()
         hist_min_20 = df_bt['MACD_Hist'].rolling(window=20).min()
+        
         df_bt.loc[(df_bt['Low'] <= low_20) & (df_bt['MACD_Hist'] > hist_min_20.shift(1)), 'Signal'] = 1
+        # 纏論的賣出邏輯：MACD 死亡交叉
+        df_bt.loc[df_bt['MACD'] < df_bt['Signal_Line'], 'Signal'] = 0
+        
     elif strategy_choice == "布林通道+RSI反轉":
         df_bt.loc[(df_bt['Low'] <= df_bt['Lower']) & (df_bt['RSI'] < 35), 'Signal'] = 1
+        df_bt.loc[(df_bt['High'] >= df_bt['Upper']) | (df_bt['RSI'] > 70), 'Signal'] = 0
     
-    df_bt.loc[df_bt['MACD'] < df_bt['Signal_Line'], 'Signal'] = 0
-    df_bt['Signal'] = df_bt['Signal'].replace(0, np.nan).ffill().fillna(0)
+    # 最後統一把訊號往前延續 (維持持有狀態)，如果一開始就沒訊號則補 0
+    df_bt['Signal'] = df_bt['Signal'].ffill().fillna(0)
     return df_bt
 
 def run_backtest(df, strategy_choice, sl_pct, tp_pct, initial_capital=100000):
