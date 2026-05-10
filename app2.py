@@ -73,7 +73,6 @@ def get_latest_price(ticker_str):
         return fast.last_price, (fast.last_price - fast.previous_close), ((fast.last_price - fast.previous_close)/fast.previous_close*100)
     except: return None, None, None
 
-# 💡 升級：加入 interval 參數支援分K
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_stock_data(ticker, start, end, interval="1d"):
     return yf.download(ticker, start=start, end=end, interval=interval, progress=False)
@@ -149,26 +148,32 @@ def run_backtest(df, strategy_choice, sl_pct, tp_pct, initial_capital=100000):
     return df_bt.fillna(initial_capital)
 
 # --- 介面設定 ---
-st.set_page_config(page_title="AI 股票戰艦 v17.0", layout="wide")
+st.set_page_config(page_title="AI 股票戰艦 v18.0", layout="wide")
 app_mode = st.sidebar.radio("切換模式", ["🔍 單股深度分析", "🚀 AI 自動巡航掃描"])
 
 if app_mode == "🔍 單股深度分析":
-    st.title("📊 智能股票深度分析 (支援 5分K 當沖版)")
+    st.title("📊 智能股票深度分析 (支援 5分K 短線版)")
     st.sidebar.header("1. 分析設定")
     sel = st.sidebar.selectbox("快速選擇股票", list(TW_STOCKS.keys()))
     ticker = st.sidebar.text_input("代碼", value="2330.TW") if sel == "✍️ 自訂輸入" else TW_STOCKS[sel]
     
-    # 💡 新增：K線頻率選擇器
     interval_choice = st.sidebar.selectbox("K線頻率 (Timeframe)", ["日K (1d)", "15分K (15m)", "5分K (5m)"])
     inv_map = {"日K (1d)": "1d", "15分K (15m)": "15m", "5分K (5m)": "5m"}
     interval_val = inv_map[interval_choice]
 
-    p_map = {"3年": 1095, "1年": 365, "6個月": 180, "3個月": 90, "1個月": 30}
-    p_sel = st.sidebar.selectbox("查詢期間", list(p_map.keys()), index=1)
+    # 💡 擴充查詢期間選項，加入短天數
+    p_map = {
+        "3年": 1095, "1年": 365, "6個月": 180, "3個月": 90, "1個月": 30, 
+        "20日": 20, "10日": 10, "5日": 5, "1日": 1
+    }
+    # 預設：如果是日K，預設1個月；如果是分K，預設5日
+    default_index = 4 if interval_val == "1d" else 7 
+    p_sel = st.sidebar.selectbox("查詢期間", list(p_map.keys()), index=default_index)
+    
     end_d = st.sidebar.date_input("結束日期", datetime.now())
     start_d = end_d - timedelta(days=p_map[p_sel])
 
-    # 💡 防呆機制：分K最多只能查 60 天
+    # 防呆機制：分K最多只能查 60 天
     if interval_val in ["5m", "15m"]:
         if (end_d - start_d).days > 59:
             start_d = end_d - timedelta(days=59)
@@ -183,7 +188,6 @@ if app_mode == "🔍 單股深度分析":
             cp, ch, cpct = get_latest_price(ticker)
             if cp: st.metric(f"⚡ {ticker.upper()} 最新報價", f"{cp:.2f}", f"{ch:.2f} ({cpct:.2f}%)")
             
-            # 帶入 interval 參數
             df = fetch_stock_data(ticker, start_d, end_d, interval=interval_val)
             info = fetch_stock_info(ticker)
             
@@ -237,13 +241,14 @@ if app_mode == "🔍 單股深度分析":
                     st.subheader("回測結果")
                     st.metric("策略最終價值", f"${fs:,.0f}", f"${fs-fm:,.0f} (vs 大盤/長期持有)")
                     st.plotly_chart(go.Figure().add_trace(go.Scatter(x=df_bt.index, y=df_bt['Market_Value'], name='大盤/長期持有', line=dict(dash='dot'))).add_trace(go.Scatter(x=df_bt.index, y=df_bt['Strategy_Value'], name='策略', line=dict(width=3))), use_container_width=True)
+            else:
+                st.error("⚠️ 找不到數據，請確認代碼是否正確，或是遇到假日無交易資料。")
 
 elif app_mode == "🚀 AI 自動巡航掃描":
     st.title("🚀 AI 自動選股雷達 (多週期掃描版)")
     st_autorefresh(interval=300000, key="fscancounter")
     st.sidebar.header("🎯 巡航設定")
     
-    # 💡 雷達掃描也支援分K了
     scan_interval_choice = st.sidebar.selectbox("雷達掃描 K線頻率", ["日K (1d)", "15分K (15m)", "5分K (5m)"])
     inv_map = {"日K (1d)": "1d", "15分K (15m)": "15m", "5分K (5m)": "5m"}
     scan_interval_val = inv_map[scan_interval_choice]
@@ -257,7 +262,6 @@ elif app_mode == "🚀 AI 自動巡航掃描":
     st.subheader(f"📡 目前掃描：【{current_cat}】 | 頻率：{scan_interval_choice}")
     buy_candidates = []
     end_d = datetime.now()
-    # 💡 防呆機制：如果是分K，天數最多給 59 天
     start_d = end_d - timedelta(days=59 if scan_interval_val in ["5m", "15m"] else 180)
     current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M')
     
@@ -267,7 +271,6 @@ elif app_mode == "🚀 AI 自動巡航掃描":
         status.text(f"掃描中: {name}...")
         try:
             time.sleep(0.15)
-            # 帶入 interval 參數
             df = fetch_stock_data(ticker, start_d, end_d, interval=scan_interval_val)
             if not df.empty:
                 if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.droplevel(1)
@@ -277,8 +280,7 @@ elif app_mode == "🚀 AI 自動巡航掃描":
                     if df_sig['Signal'].iloc[-1] == 1:
                         price = round(df_sig['Close'].iloc[-1], 2)
                         res = {
-                            "觸發時間": current_time_str, 
-                            "頻率": scan_interval_choice, # 記錄觸發的 K線層級
+                            "觸發時間": current_time_str, "頻率": scan_interval_choice, 
                             "板塊": current_cat, "代碼": ticker, "股票名稱": name, 
                             "收盤價": price, "觸發策略": strat
                         }
