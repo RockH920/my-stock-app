@@ -12,7 +12,6 @@ from streamlit_autorefresh import st_autorefresh
 # --- 檔案儲存設定 ---
 DB_FILE = "scan_history.csv"
 
-# --- 0. 初始化狀態與載入歷史紀錄 ---
 if 'search_history' not in st.session_state: st.session_state['search_history'] = []
 if 'scan_index' not in st.session_state: st.session_state['scan_index'] = 0
 
@@ -45,16 +44,14 @@ SCAN_POOLS = {
     "🟢 PCB 電子之母": {"2383.TW": "台光電", "6274.TW": "台燿", "3037.TW": "欣興", "8046.TW": "南電", "2368.TW": "金像電", "2313.TW": "華通", "4958.TW": "臻鼎-KY",
         "2355.TW": "敬鵬", "2367.TW": "燿華", "6269.TW": "台郡"},
     "💰 熱門 ETF": {"0056.TW": "元大高股息", "00878.TW": "國泰永續高股息", "00929.TW": "復華台灣科技優息", "00713.TW": "元大台灣高息低波"}
+
 }
 
-
-# 💡 修復：穩定的選單建立邏輯
 TW_STOCKS = {"✍️ 自訂輸入": ""}
 TICKER_NAME_MAP = {}
 for cat, stocks in SCAN_POOLS.items():
     for tkr, name in stocks.items():
-        menu_name = f"{tkr} - {name}"
-        TW_STOCKS[menu_name] = tkr
+        TW_STOCKS[f"{tkr} - {name}"] = tkr
         TICKER_NAME_MAP[tkr] = name
 TW_STOCKS.update({"NVDA - 輝達": "NVDA", "TSLA - 特斯拉": "TSLA", "AAPL - 蘋果": "AAPL"})
 TICKER_NAME_MAP.update({"NVDA": "輝達", "TSLA": "特斯拉", "AAPL": "蘋果"})
@@ -161,11 +158,11 @@ def run_backtest(df, strategy_choice, sl_pct, tp_pct, initial_capital=100000):
     return df_bt.fillna(initial_capital)
 
 # --- 介面設定 ---
-st.set_page_config(page_title="AI 股票戰艦 v22.0", layout="wide")
+st.set_page_config(page_title="AI 股票戰艦 v23.0", layout="wide")
 app_mode = st.sidebar.radio("切換模式", ["🔍 單股深度分析", "🚀 AI 自動巡航掃描"])
 
 if app_mode == "🔍 單股深度分析":
-    st.title("📊 智能股票深度分析 (圖表與財報滿血回歸版)")
+    st.title("📊 智能股票深度分析 (預熱引擎版)")
     st.sidebar.header("1. 分析設定")
     sel = st.sidebar.selectbox("快速選擇股票", list(TW_STOCKS.keys()))
     ticker = st.sidebar.text_input("輸入代碼", value="2330.TW") if sel == "✍️ 自訂輸入" else TW_STOCKS[sel]
@@ -174,21 +171,36 @@ if app_mode == "🔍 單股深度分析":
     inv_map = {"日K (1d)": "1d", "15分K (15m)": "15m", "5分K (5m)": "5m"}
     interval_val = inv_map[interval_choice]
 
-    p_map = {"3年": 1095, "1年": 365, "6個月": 180, "3個月": 90, "1個月": 30, "20日": 20, "10日": 10, "5日": 5, "1日": 1}
+    # 💡 找回自訂日期與選單
+    p_map = {"3年": 1095, "1年": 365, "6個月": 180, "3個月": 90, "1個月": 30, "20日": 20, "10日": 10, "5日": 5, "1日": 1, "✍️ 自訂": 0}
     default_index = 1 if interval_val == "1d" else 7 
     p_sel = st.sidebar.selectbox("查詢期間", list(p_map.keys()), index=default_index)
     
-    end_d = datetime.now()
-    start_d = end_d - timedelta(days=p_map[p_sel])
-    if interval_val in ["5m", "15m"] and (end_d - start_d).days > 59:
-        start_d = end_d - timedelta(days=59)
+    end_d = st.sidebar.date_input("結束日期 (預設今日)", datetime.now())
+    
+    if p_sel == "✍️ 自訂":
+        start_d = st.sidebar.date_input("開始日期", end_d - timedelta(days=30))
+    else:
+        start_d = end_d - timedelta(days=p_map[p_sel])
+        st.sidebar.text(f"📅 開始日期: {start_d.strftime('%Y-%m-%d')}")
+
+    # 💡 核心：資料預熱引擎，往回多抓 60 天給指標計算用
+    buffer_days = 60 if interval_val == "1d" else 15
+    fetch_start = start_d - timedelta(days=buffer_days)
+
+    if interval_val in ["5m", "15m"]:
+        min_allowed = datetime.now() - timedelta(days=59)
+        if fetch_start < min_allowed: fetch_start = min_allowed
+        if start_d < min_allowed: 
+            start_d = min_allowed
+            st.sidebar.warning("⚠️ Yahoo 限制分K最多支援近 60 天，已自動修正日期。")
 
     st.sidebar.markdown("---")
     strat = st.sidebar.selectbox("交易策略", STRATEGIES)
     tp, sl = st.sidebar.slider("停利 (%)", 5, 100, 20, 5), st.sidebar.slider("停損 (%)", 1, 50, 10, 1)
 
     if st.sidebar.button("開始深度分析"):
-        with st.spinner('AI 分析中...'):
+        with st.spinner('載入資料與計算指標中...'):
             info = fetch_stock_info(ticker)
             cp, ch, cpct = get_latest_price(ticker)
             
@@ -197,80 +209,89 @@ if app_mode == "🔍 單股深度分析":
             
             if cp: st.metric(f"⚡ {ticker.upper()}{display_name} 最新報價", f"{cp:.2f}", f"{ch:.2f} ({cpct:.2f}%)")
             
-            df = fetch_stock_data(ticker, start_d, end_d, interval=interval_val)
+            # 用加了 buffer 的 fetch_start 抓資料
+            df = fetch_stock_data(ticker, fetch_start, end_d + timedelta(days=1), interval=interval_val)
             if not df.empty:
                 if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.droplevel(1)
                 df = calculate_indicators(df)
                 df_bt = run_backtest(df, strat, sl/100, tp/100)
                 
-                sig_now = df_bt['Signal'].iloc[-1]
-                if sig_now == 1: st.success(f"🤖 目前建議：【買進/持有】(策略：{strat})")
-                else: st.warning(f"🤖 目前建議：【觀望/賣出】(策略：{strat})")
-
-                # 💡 修復：找回三個核心分頁 Tabs
-                tab1, tab2, tab3 = st.tabs(["📈 技術分析 (量價與指標)", "🏢 基本面與籌碼", "⏱️ 績效回測報告"])
+                # 💡 關鍵：切出使用者真正要看的日期區間 (隱藏前面的預熱資料)
+                start_dt = pd.to_datetime(start_d)
+                end_dt = pd.to_datetime(end_d) + timedelta(days=1)
+                if df_bt.index.tz is not None:
+                    start_dt = start_dt.tz_localize(df_bt.index.tz)
+                    end_dt = end_dt.tz_localize(df_bt.index.tz)
                 
-                with tab1:
-                    # 1. 結合 K 線與成交量的主圖
-                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-                    fig.add_trace(go.Scatter(x=df.index, y=df['Upper'], line=dict(color='rgba(173, 204, 255, 0.2)'), showlegend=False), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=df.index, y=df['Lower'], line=dict(color='rgba(173, 204, 255, 0.2)'), fill='tonexty', fillcolor='rgba(173, 204, 255, 0.1)', name='布林通道'), row=1, col=1)
-                    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='K線'), row=1, col=1)
-                    
-                    buy_pts = df_bt[df_bt['Action_Buy']]; sell_pts = df_bt[df_bt['Action_Sell']]
-                    fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.97, mode='markers', marker=dict(symbol='triangle-up', color='#00FF00', size=15), name='買入'), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.03, mode='markers', marker=dict(symbol='triangle-down', color='#FF4B4B', size=15), name='賣出'), row=1, col=1)
-                    
-                    vol_colors = ['#d62728' if row['Close'] < row['Open'] else '#2ca02c' for idx, row in df.iterrows()]
-                    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name='成交量'), row=2, col=1)
-                    st.plotly_chart(fig.update_layout(height=650, xaxis_rangeslider_visible=False, title=f"{ticker.upper()} K線與量價走勢"), use_container_width=True)
+                df_disp = df_bt[(df_bt.index >= start_dt) & (df_bt.index < end_dt)]
+                
+                if df_disp.empty:
+                    st.error("⚠️ 在您選擇的日期內沒有交易資料 (可能是假日或剛好沒開盤)。")
+                else:
+                    sig_now = df_disp['Signal'].iloc[-1]
+                    if sig_now == 1: st.success(f"🤖 目前建議：【買進/持有】(策略：{strat})")
+                    else: st.warning(f"🤖 目前建議：【觀望/賣出】(策略：{strat})")
 
-                    # 💡 修復：補回 RSI 與 MACD 圖表
-                    st.plotly_chart(go.Figure(data=[go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#AB63FA', width=2))]).update_layout(title="RSI 指標 (30/70)", height=300, yaxis=dict(range=[0, 100])).add_hline(y=70, line_dash="dash", line_color="red").add_hline(y=30, line_dash="dash", line_color="green"), use_container_width=True)
+                    tab1, tab2, tab3 = st.tabs(["📈 技術分析 (量價與指標)", "🏢 基本面與籌碼", "⏱️ 績效回測報告"])
                     
-                    fig_macd = go.Figure()
-                    fig_macd.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='快線', line=dict(color='#1f77b4')))
-                    fig_macd.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], name='慢線', line=dict(color='#ff7f0e')))
-                    fig_macd.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], name='柱狀圖', marker_color=['#2ca02c' if v>=0 else '#d62728' for v in df['MACD_Hist']]))
-                    st.plotly_chart(fig_macd.update_layout(title="MACD 動能指標", height=350), use_container_width=True)
+                    with tab1:
+                        # 全面使用 df_disp (切好的乾淨資料) 畫圖
+                        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+                        fig.add_trace(go.Scatter(x=df_disp.index, y=df_disp['Upper'], line=dict(color='rgba(173, 204, 255, 0.2)'), showlegend=False), row=1, col=1)
+                        fig.add_trace(go.Scatter(x=df_disp.index, y=df_disp['Lower'], line=dict(color='rgba(173, 204, 255, 0.2)'), fill='tonexty', fillcolor='rgba(173, 204, 255, 0.1)', name='布林通道'), row=1, col=1)
+                        fig.add_trace(go.Candlestick(x=df_disp.index, open=df_disp['Open'], high=df_disp['High'], low=df_disp['Low'], close=df_disp['Close'], name='K線'), row=1, col=1)
+                        
+                        buy_pts = df_disp[df_disp['Action_Buy']]; sell_pts = df_disp[df_disp['Action_Sell']]
+                        fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.97, mode='markers', marker=dict(symbol='triangle-up', color='#00FF00', size=15), name='買入'), row=1, col=1)
+                        fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.03, mode='markers', marker=dict(symbol='triangle-down', color='#FF4B4B', size=15), name='賣出'), row=1, col=1)
+                        
+                        vol_colors = ['#d62728' if row['Close'] < row['Open'] else '#2ca02c' for idx, row in df_disp.iterrows()]
+                        fig.add_trace(go.Bar(x=df_disp.index, y=df_disp['Volume'], marker_color=vol_colors, name='成交量'), row=2, col=1)
+                        st.plotly_chart(fig.update_layout(height=650, xaxis_rangeslider_visible=False, title=f"{ticker.upper()} K線與量價走勢"), use_container_width=True)
 
-                with tab2:
-                    # 💡 修復：補回財報基本面
-                    st.subheader("📊 基本面與籌碼概覽")
-                    c1, c2, c3, c4 = st.columns(4)
-                    pe = info.get('trailingPE', 0)
-                    eps = info.get('trailingEps', 0)
-                    pb = info.get('priceToBook', 0)
-                    div = info.get('dividendYield', 0)
-                    
-                    c1.metric("P/E (本益比)", f"{pe:.2f}" if isinstance(pe, (int, float)) and pe > 0 else "N/A")
-                    c2.metric("EPS (每股盈餘)", f"{eps:.2f}" if isinstance(eps, (int, float)) else "N/A")
-                    c3.metric("法人持股比例", f"{info.get('heldPercentInstitutions', 0)*100:.2f}%")
-                    c4.metric("殖利率", f"{div*100:.2f}%" if isinstance(div, float) else "N/A")
-                    
-                    st.markdown("---")
-                    if isinstance(pe, (int, float)) and pe > 0 and isinstance(eps, (int, float)) and eps > 0:
-                        max_pe = info.get('fiftyTwoWeekHigh', df['High'].max()) / eps
-                        min_pe = info.get('fiftyTwoWeekLow', df['Low'].min()) / eps
-                        fig_pe = go.Figure(go.Indicator(
-                            mode="gauge+number", value=pe, title={'text': "P/E 歷史區間位階"},
-                            gauge={'axis': {'range': [min_pe*0.8, max_pe*1.1]},
-                                   'steps': [{'range': [0, min_pe+(max_pe-min_pe)*0.33], 'color': "lightgreen"},
-                                             {'range': [min_pe+(max_pe-min_pe)*0.66, 100], 'color': "salmon"}],
-                                   'threshold': {'line': {'color': "red", 'width': 4}, 'value': pe}}
-                        ))
-                        st.plotly_chart(fig_pe.update_layout(height=300), use_container_width=True)
-                    st.write("**📝 公司簡介:**", info.get('longBusinessSummary', '無提供相關資料。'))
+                        st.plotly_chart(go.Figure(data=[go.Scatter(x=df_disp.index, y=df_disp['RSI'], line=dict(color='#AB63FA', width=2))]).update_layout(title="RSI 指標 (30/70)", height=300, yaxis=dict(range=[0, 100])).add_hline(y=70, line_dash="dash", line_color="red").add_hline(y=30, line_dash="dash", line_color="green"), use_container_width=True)
+                        
+                        fig_macd = go.Figure()
+                        fig_macd.add_trace(go.Scatter(x=df_disp.index, y=df_disp['MACD'], name='快線', line=dict(color='#1f77b4')))
+                        fig_macd.add_trace(go.Scatter(x=df_disp.index, y=df_disp['Signal_Line'], name='慢線', line=dict(color='#ff7f0e')))
+                        fig_macd.add_trace(go.Bar(x=df_disp.index, y=df_disp['MACD_Hist'], name='柱狀圖', marker_color=['#2ca02c' if v>=0 else '#d62728' for v in df_disp['MACD_Hist']]))
+                        st.plotly_chart(fig_macd.update_layout(title="MACD 動能指標", height=350), use_container_width=True)
 
-                with tab3:
-                    # 💡 修復：補回回測報告與圖表
-                    fm, fs = df_bt['Market_Value'].iloc[-1], df_bt['Strategy_Value'].iloc[-1]
-                    st.subheader("⏱️ 策略回測表現")
-                    st.metric("策略最終資金", f"${fs:,.0f}", f"{fs-fm:,.0f} (超越大盤績效)")
-                    fig_v = go.Figure()
-                    fig_v.add_trace(go.Scatter(x=df_bt.index, y=df_bt['Market_Value'], name='大盤/買進持有', line=dict(dash='dot', color='gray')))
-                    fig_v.add_trace(go.Scatter(x=df_bt.index, y=df_bt['Strategy_Value'], name='策略執行績效', line=dict(width=3, color='blue')))
-                    st.plotly_chart(fig_v.update_layout(height=450, title="資金成長曲線對比"), use_container_width=True)
+                    with tab2:
+                        st.subheader("📊 基本面與籌碼概覽")
+                        c1, c2, c3, c4 = st.columns(4)
+                        pe = info.get('trailingPE', 0); eps = info.get('trailingEps', 0)
+                        pb = info.get('priceToBook', 0); div = info.get('dividendYield', 0)
+                        
+                        c1.metric("P/E (本益比)", f"{pe:.2f}" if isinstance(pe, (int, float)) and pe > 0 else "N/A")
+                        c2.metric("EPS (每股盈餘)", f"{eps:.2f}" if isinstance(eps, (int, float)) else "N/A")
+                        c3.metric("法人持股比例", f"{info.get('heldPercentInstitutions', 0)*100:.2f}%")
+                        c4.metric("殖利率", f"{div*100:.2f}%" if isinstance(div, float) else "N/A")
+                        
+                        st.markdown("---")
+                        if isinstance(pe, (int, float)) and pe > 0 and isinstance(eps, (int, float)) and eps > 0:
+                            max_pe = info.get('fiftyTwoWeekHigh', df['High'].max()) / eps
+                            min_pe = info.get('fiftyTwoWeekLow', df['Low'].min()) / eps
+                            fig_pe = go.Figure(go.Indicator(
+                                mode="gauge+number", value=pe, title={'text': "P/E 歷史區間位階"},
+                                gauge={'axis': {'range': [min_pe*0.8, max_pe*1.1]},
+                                       'steps': [{'range': [0, min_pe+(max_pe-min_pe)*0.33], 'color': "lightgreen"},
+                                                 {'range': [min_pe+(max_pe-min_pe)*0.66, 100], 'color': "salmon"}],
+                                       'threshold': {'line': {'color': "red", 'width': 4}, 'value': pe}}
+                            ))
+                            st.plotly_chart(fig_pe.update_layout(height=300), use_container_width=True)
+                        st.write("**📝 公司簡介:**", info.get('longBusinessSummary', '無提供相關資料。'))
+
+                    with tab3:
+                        fm, fs = df_disp['Market_Value'].iloc[-1], df_disp['Strategy_Value'].iloc[-1]
+                        st.subheader("⏱️ 策略回測表現")
+                        st.metric("策略最終資金", f"${fs:,.0f}", f"{fs-fm:,.0f} (超越大盤績效)")
+                        fig_v = go.Figure()
+                        fig_v.add_trace(go.Scatter(x=df_disp.index, y=df_disp['Market_Value'], name='大盤/買進持有', line=dict(dash='dot', color='gray')))
+                        fig_v.add_trace(go.Scatter(x=df_disp.index, y=df_disp['Strategy_Value'], name='策略執行績效', line=dict(width=3, color='blue')))
+                        st.plotly_chart(fig_v.update_layout(height=450, title="資金成長曲線對比"), use_container_width=True)
+            else:
+                st.error("⚠️ 無法獲取資料，請檢查代碼是否正確。")
 
 elif app_mode == "🚀 AI 自動巡航掃描":
     st.title("🚀 AI 自動選股雷達 (多週期掃描版)")
