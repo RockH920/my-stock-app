@@ -55,7 +55,7 @@ STRATEGIES = [
     "布林通道+RSI反轉"
 ]
 
-# --- 數據處理與圖表 ---
+# --- 數據處理 ---
 def get_latest_price(ticker_str):
     try:
         tkr = yf.Ticker(ticker_str)
@@ -73,12 +73,10 @@ def calculate_indicators(df):
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['std'] = df['Close'].rolling(window=20).std()
     df['Upper'], df['Lower'] = df['MA20']+(df['std']*2), df['MA20']-(df['std']*2)
-    # RSI
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     df['RSI'] = 100 - (100 / (1 + (gain / loss)))
-    # MACD
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = ema12 - ema26
@@ -86,132 +84,123 @@ def calculate_indicators(df):
     df['MACD_Hist'] = df['MACD'] - df['Signal_Line']
     return df
 
-# --- 核心策略大腦 (乾淨隔離版) ---
+# --- 核心策略大腦 ---
 def generate_signals(df, strategy_choice):
     df_bt = df.copy()
     df_bt['Signal'] = np.nan 
-    
     if strategy_choice == "均線黃金交叉 (20MA & 50MA)":
         df_bt.loc[df_bt['SMA_20'] > df_bt['SMA_50'], 'Signal'] = 1
         df_bt.loc[df_bt['SMA_20'] <= df_bt['SMA_50'], 'Signal'] = 0
-        
     elif strategy_choice == "RSI 超買超賣 (30買/70賣)":
         df_bt.loc[df_bt['RSI'] < 30, 'Signal'] = 1
         df_bt.loc[df_bt['RSI'] > 70, 'Signal'] = 0
-        
     elif strategy_choice == "MACD 黃金交叉/死亡交叉":
         df_bt.loc[df_bt['MACD'] > df_bt['Signal_Line'], 'Signal'] = 1
         df_bt.loc[df_bt['MACD'] <= df_bt['Signal_Line'], 'Signal'] = 0
-        
     elif strategy_choice == "纏論核心 (底背離+二買策略)":
         window = 30
         low_lookback = df_bt['Low'].rolling(window=window).min()
         hist_min = df_bt['MACD_Hist'].rolling(window=window).min()
         div_buy = (df_bt['Low'] <= low_lookback) & (df_bt['MACD_Hist'] > hist_min.shift(1))
-        
         last_low_ref = df_bt['Low'].rolling(window=window*2).min().shift(5)
         sec_buy = (df_bt['Low'] > last_low_ref) & (df_bt['MACD'] > df_bt['Signal_Line']) & (df_bt['MACD'].shift(1) < df_bt['Signal_Line'].shift(1))
-        
         df_bt.loc[div_buy | sec_buy, 'Signal'] = 1
         df_bt.loc[df_bt['MACD'] < df_bt['Signal_Line'], 'Signal'] = 0
-        
     elif strategy_choice == "布林通道+RSI反轉":
         df_bt.loc[(df_bt['Low'] <= df_bt['Lower']) & (df_bt['RSI'] < 35), 'Signal'] = 1
         df_bt.loc[(df_bt['High'] >= df_bt['Upper']) | (df_bt['RSI'] > 70), 'Signal'] = 0
-    
     df_bt['Signal'] = df_bt['Signal'].ffill().fillna(0)
     return df_bt
 
-# --- 介面開始 ---
-st.set_page_config(page_title="AI 股票戰艦 v18.3", layout="wide")
+def run_backtest(df, strategy_choice, sl_pct, tp_pct, initial_capital=100000):
+    df_bt = generate_signals(df.copy(), strategy_choice)
+    df_bt['Position'] = 0; df_bt['Action_Buy'] = False; df_bt['Action_Sell'] = False
+    pos, entry = 0, 0.0
+    for i in range(1, len(df_bt)):
+        curr = df_bt['Close'].iloc[i]
+        sig = df_bt['Signal'].iloc[i-1]
+        if pos == 1:
+            if curr <= entry*(1-sl_pct) or curr >= entry*(1+tp_pct) or sig == 0:
+                pos = 0; df_bt.iloc[i, df_bt.columns.get_loc('Action_Sell')] = True
+        elif pos == 0 and sig == 1:
+            pos, entry = 1, curr; df_bt.iloc[i, df_bt.columns.get_loc('Action_Buy')] = True
+        df_bt.iloc[i, df_bt.columns.get_loc('Position')] = pos
+    df_bt['Strategy_Value'] = initial_capital * (1 + (df_bt['Position'].shift(1).fillna(0) * df_bt['Close'].pct_change())).cumprod()
+    df_bt['Market_Value'] = initial_capital * (1 + df_bt['Close'].pct_change()).cumprod()
+    return df_bt.fillna(initial_capital)
+
+# --- 介面 ---
+st.set_page_config(page_title="AI 股票戰艦 v18.4", layout="wide")
 app_mode = st.sidebar.radio("模式切換", ["🔍 單股深度分析", "🚀 雷達掃描"])
 
 if app_mode == "🔍 單股深度分析":
-    st.title("📊 股票深度分析 (完整圖表版)")
+    st.title("📊 股票深度分析 (功能全回歸)")
     st.sidebar.header("1. 分析設定")
     sel = st.sidebar.selectbox("快速選擇股票", list(TW_STOCKS.keys()))
     ticker = st.sidebar.text_input("代碼", value="2330.TW") if sel == "✍️ 自訂輸入" else TW_STOCKS[sel]
     
-    interval_choice = st.sidebar.selectbox("K線頻率 (Timeframe)", ["日K (1d)", "15分K (15m)", "5分K (5m)"])
+    interval_choice = st.sidebar.selectbox("K線頻率", ["日K (1d)", "15分K (15m)", "5分K (5m)"])
     inv_map = {"日K (1d)": "1d", "15分K (15m)": "15m", "5分K (5m)": "5m"}
     interval_val = inv_map[interval_choice]
 
-    p_map = {"3年": 1095, "1年": 365, "6個月": 180, "3個月": 90, "1個月": 30, "20日": 20, "10日": 10, "5日": 5, "1日": 1}
-    default_index = 4 if interval_val == "1d" else 7 
-    p_sel = st.sidebar.selectbox("查詢期間", list(p_map.keys()), index=default_index)
-    
-    end_d = datetime.now()
-    start_d = end_d - timedelta(days=p_map[p_sel])
-
-    if interval_val in ["5m", "15m"] and (end_d - start_d).days > 59:
-        start_d = end_d - timedelta(days=59)
-        st.sidebar.warning("⚠️ 分K線最多支援近 60 天資料，已修正開始日期。")
+    p_map = {"1年": 365, "6個月": 180, "1個月": 30, "10日": 10, "5日": 5}
+    p_sel = st.sidebar.selectbox("查詢期間", list(p_map.keys()), index=1)
+    end_d = datetime.now(); start_d = end_d - timedelta(days=p_map[p_sel])
 
     st.sidebar.markdown("---")
     strat = st.sidebar.selectbox("交易策略", STRATEGIES)
+    # 💡 找回來的停利停損滑桿
+    tp = st.sidebar.slider("停利目標 (%)", 5, 100, 20, 5)
+    sl = st.sidebar.slider("停損底線 (%)", 1, 50, 10, 1)
 
-    if st.sidebar.button("開始分析"):
+    if st.sidebar.button("開始深度分析"):
         with st.spinner('運算中...'):
             cp, ch, cpct = get_latest_price(ticker)
             if cp: st.metric(f"⚡ {ticker.upper()} 最新報價", f"{cp:.2f}", f"{ch:.2f} ({cpct:.2f}%)")
-            
             df = fetch_stock_data(ticker, start_d, end_d, interval=interval_val)
             if not df.empty:
                 if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.droplevel(1)
                 df = calculate_indicators(df)
-                df_bt = generate_signals(df, strat)
-                
-                df_bt['Action_Buy'] = (df_bt['Signal'] == 1) & (df_bt['Signal'].shift(1) == 0)
-                df_bt['Action_Sell'] = (df_bt['Signal'] == 0) & (df_bt['Signal'].shift(1) == 1)
+                # 💡 使用 run_backtest 包含 TP/SL 邏輯
+                df_bt = run_backtest(df, strat, sl/100, tp/100)
                 
                 sig_now = df_bt['Signal'].iloc[-1]
-                if sig_now == 1: st.success(f"🤖 目前狀態：【買進/持有】(策略：{strat})")
-                else: st.warning(f"🤖 目前狀態：【觀望/賣出】(策略：{strat})")
+                if sig_now == 1: st.success(f"🤖 目前建議：【買進/持有】(策略：{strat})")
+                else: st.warning(f"🤖 目前建議：【觀望/賣出】(策略：{strat})")
 
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-                fig.add_trace(go.Scatter(x=df.index, y=df['Upper'], line=dict(color='rgba(173, 204, 255, 0.2)'), showlegend=False), row=1, col=1)
-                fig.add_trace(go.Scatter(x=df.index, y=df['Lower'], line=dict(color='rgba(173, 204, 255, 0.2)'), fill='tonexty', fillcolor='rgba(173, 204, 255, 0.1)', name='布林通道'), row=1, col=1)
                 fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='K線'), row=1, col=1)
-                
                 buy_pts = df_bt[df_bt['Action_Buy']]; sell_pts = df_bt[df_bt['Action_Sell']]
                 fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.97, mode='markers', marker=dict(symbol='triangle-up', color='#00FF00', size=15), name='買入'), row=1, col=1)
                 fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.03, mode='markers', marker=dict(symbol='triangle-down', color='#FF4B4B', size=15), name='賣出'), row=1, col=1)
-                
                 vol_colors = ['#d62728' if row['Close'] < row['Open'] else '#2ca02c' for idx, row in df.iterrows()]
                 fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name='成交量'), row=2, col=1)
-                
-                fig.update_layout(height=800, xaxis_rangeslider_visible=False, title=f"{ticker.upper()} 量價走勢圖 ({interval_choice})")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig.update_layout(height=750, xaxis_rangeslider_visible=False), use_container_width=True)
 
-# 💡 以下就是被我不小心隱藏掉的完整雷達模塊，現在已全數補回！
+                st.subheader("⏱️ 回測資金曲線")
+                fig_v = go.Figure()
+                fig_v.add_trace(go.Scatter(x=df_bt.index, y=df_bt['Market_Value'], name='大盤持有', line=dict(dash='dot')))
+                fig_v.add_trace(go.Scatter(x=df_bt.index, y=df_bt['Strategy_Value'], name='策略資金', line=dict(width=3)))
+                st.plotly_chart(fig_v.update_layout(height=400), use_container_width=True)
+
 elif app_mode == "🚀 雷達掃描":
-    st.title("🚀 AI 自動選股雷達 (多週期掃描版)")
+    st.title("🚀 AI 自動選股雷達")
     st_autorefresh(interval=300000, key="fscancounter")
     st.sidebar.header("🎯 巡航設定")
-    
-    scan_interval_choice = st.sidebar.selectbox("雷達掃描 K線頻率", ["日K (1d)", "15分K (15m)", "5分K (5m)"])
+    scan_interval_choice = st.sidebar.selectbox("掃描頻率", ["日K (1d)", "15分K (15m)", "5分K (5m)"])
     inv_map = {"日K (1d)": "1d", "15分K (15m)": "15m", "5分K (5m)": "5m"}
     scan_interval_val = inv_map[scan_interval_choice]
-
     selected_strats = st.sidebar.multiselect("策略多選", STRATEGIES, default=["纏論核心 (底背離+二買策略)"])
-    is_auto = st.sidebar.toggle("啟用自動輪巡", value=True)
+    is_auto = st.sidebar.toggle("自動輪巡", value=True)
     categories = list(SCAN_POOLS.keys())
+    current_cat = categories[st.session_state['scan_index']] if is_auto else st.sidebar.selectbox("指定板塊", categories)
+    if is_auto: st.session_state['scan_index'] = (st.session_state['scan_index'] + 1) % len(categories)
     
-    if is_auto:
-        current_cat = categories[st.session_state['scan_index']]
-        st.session_state['scan_index'] = (st.session_state['scan_index'] + 1) % len(categories)
-    else:
-        current_cat = st.sidebar.selectbox("指定板塊", categories)
-        
     st.subheader(f"📡 目前掃描：【{current_cat}】 | 頻率：{scan_interval_choice}")
     buy_candidates = []
-    end_d = datetime.now()
-    start_d = end_d - timedelta(days=59 if scan_interval_val in ["5m", "15m"] else 180)
+    end_d = datetime.now(); start_d = end_d - timedelta(days=59 if scan_interval_val != "1d" else 180)
     current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-    
-    progress = st.progress(0)
-    status = st.empty()
-    stocks = SCAN_POOLS[current_cat]
+    progress = st.progress(0); status = st.empty(); stocks = SCAN_POOLS[current_cat]
     
     for idx, (ticker, name) in enumerate(stocks.items()):
         status.text(f"掃描中: {name}...")
@@ -223,27 +212,16 @@ elif app_mode == "🚀 雷達掃描":
                 df = calculate_indicators(df)
                 for strat in selected_strats:
                     df_sig = generate_signals(df, strat)
-                    # 抓取最後一根K線是否為買進持有狀態
                     if df_sig['Signal'].iloc[-1] == 1:
                         price = round(df_sig['Close'].iloc[-1], 2)
-                        res = {
-                            "觸發時間": current_time_str, 
-                            "頻率": scan_interval_choice,
-                            "板塊": current_cat, "代碼": ticker, "股票名稱": name, 
-                            "收盤價": price, "觸發策略": strat
-                        }
-                        buy_candidates.append(res)
-                        save_record_to_csv(pd.DataFrame([res]))
+                        res = {"觸發時間": current_time_str, "頻率": scan_interval_choice, "板塊": current_cat, "代碼": ticker, "股票名稱": name, "收盤價": price, "觸發策略": strat}
+                        buy_candidates.append(res); save_record_to_csv(pd.DataFrame([res]))
         except: pass
         progress.progress((idx + 1) / len(stocks))
     
     st.session_state['scan_log'] = load_history()
-    
     if buy_candidates:
-        st.success(f"🔥 發現 {len(buy_candidates)} 個訊號！")
-        st.dataframe(pd.DataFrame(buy_candidates), use_container_width=True)
-    else:
-        st.warning(f"⚠️ 本次掃描無符合訊號。")
+        st.success(f"🔥 發現 {len(buy_candidates)} 個買進訊號！"); st.dataframe(pd.DataFrame(buy_candidates), use_container_width=True)
     
     st.markdown("---")
     st.subheader("💾 歷史掃描總表")
@@ -251,7 +229,3 @@ elif app_mode == "🚀 雷達掃描":
         log_display = st.session_state['scan_log'].sort_values(by="觸發時間", ascending=False)
         st.dataframe(log_display, use_container_width=True, height=400)
         st.download_button("📥 下載存檔", log_display.to_csv(index=False).encode('utf-8-sig'), "stock_history.csv", "text/csv")
-        if st.button("🗑️ 清空所有歷史"):
-            if os.path.exists(DB_FILE): os.remove(DB_FILE)
-            st.session_state['scan_log'] = pd.DataFrame(columns=["觸發時間", "頻率", "板塊", "代碼", "股票名稱", "收盤價", "觸發策略"])
-            st.rerun()
