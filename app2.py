@@ -94,6 +94,7 @@ def calculate_indicators(df):
     df['MACD_Hist'] = df['MACD'] - df['Signal_Line']
     return df
 
+# 💡 完美還原 v10.0 的原汁原味邏輯與參數
 def generate_signals(df, strategy_choice):
     df_bt = df.copy()
     df_bt['Signal'] = np.nan 
@@ -111,21 +112,27 @@ def generate_signals(df, strategy_choice):
         df_bt.loc[df_bt['MACD'] <= df_bt['Signal_Line'], 'Signal'] = 0
         
     elif strategy_choice == "纏論核心 (底背離+二買策略)":
-        window = 30
-        low_lookback = df_bt['Low'].rolling(window=window).min()
-        hist_min = df_bt['MACD_Hist'].rolling(window=window).min()
-        div_buy = (df_bt['Low'] <= low_lookback) & (df_bt['MACD_Hist'] > hist_min.shift(1))
-        last_low_ref = df_bt['Low'].rolling(window=window*2).min().shift(5)
-        sec_buy = (df_bt['Low'] > last_low_ref) & (df_bt['MACD'] > df_bt['Signal_Line']) & (df_bt['MACD'].shift(1) < df_bt['Signal_Line'].shift(1))
+        # 1. 偵測底背離 (一買)
+        low_20 = df_bt['Low'].rolling(window=20).min()
+        hist_min_20 = df_bt['MACD_Hist'].rolling(window=20).min()
+        div_buy = (df_bt['Low'] <= low_20) & (df_bt['MACD_Hist'] > hist_min_20.shift(1))
+        
+        # 2. 偵測二買 (回踩不破底且 MACD 金叉)
+        last_low = df_bt['Low'].rolling(window=30).min().shift(5)
+        sec_buy = (df_bt['Low'] > last_low) & (df_bt['MACD'] > df_bt['Signal_Line']) & (df_bt['MACD'].shift(1) < df_bt['Signal_Line'].shift(1))
+        
+        # 3. 💡 找回失落的 v10.0 偵測頂背離 (一賣)
+        high_20 = df_bt['High'].rolling(window=20).max()
+        hist_max_20 = df_bt['MACD_Hist'].rolling(window=20).max()
+        div_sell = (df_bt['High'] >= high_20) & (df_bt['MACD_Hist'] < hist_max_20.shift(1))
         
         df_bt.loc[div_buy | sec_buy, 'Signal'] = 1
-        df_bt.loc[df_bt['MACD'] < df_bt['Signal_Line'], 'Signal'] = 0
+        df_bt.loc[div_sell | (df_bt['MACD'] < df_bt['Signal_Line']), 'Signal'] = 0
         
     elif strategy_choice == "纏論簡化版 (MACD 底背馳)":
-        window = 20
-        low_lookback = df_bt['Low'].rolling(window=window).min()
-        hist_min = df_bt['MACD_Hist'].rolling(window=window).min()
-        df_bt.loc[(df_bt['Low'] <= low_lookback) & (df_bt['MACD_Hist'] > hist_min.shift(1)), 'Signal'] = 1
+        low_20 = df_bt['Low'].rolling(window=20).min()
+        hist_min_20 = df_bt['MACD_Hist'].rolling(window=20).min()
+        df_bt.loc[(df_bt['Low'] <= low_20) & (df_bt['MACD_Hist'] > hist_min_20.shift(1)), 'Signal'] = 1
         df_bt.loc[df_bt['MACD'] < df_bt['Signal_Line'], 'Signal'] = 0
         
     elif strategy_choice == "布林通道+RSI反轉":
@@ -153,11 +160,11 @@ def run_backtest(df, strategy_choice, sl_pct, tp_pct, initial_capital=100000):
     return df_bt.fillna(initial_capital)
 
 # --- 介面設定 ---
-st.set_page_config(page_title="AI 股票戰艦 v19.1", layout="wide")
+st.set_page_config(page_title="AI 股票戰艦 v20.0", layout="wide")
 app_mode = st.sidebar.radio("切換模式", ["🔍 單股深度分析", "🚀 AI 自動巡航掃描"])
 
 if app_mode == "🔍 單股深度分析":
-    st.title("📊 智能股票深度分析 (全策略校正版)")
+    st.title("📊 智能股票深度分析 (v10參數回歸完美版)")
     st.sidebar.header("1. 分析設定")
     sel = st.sidebar.selectbox("快速選擇股票", list(TW_STOCKS.keys()))
     ticker = st.sidebar.text_input("代碼", value="2330.TW") if sel == "✍️ 自訂輸入" else TW_STOCKS[sel]
@@ -200,8 +207,6 @@ if app_mode == "🔍 單股深度分析":
                 
                 buy_pts = df_bt[df_bt['Action_Buy']]; sell_pts = df_bt[df_bt['Action_Sell']]
                 fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.97, mode='markers', marker=dict(symbol='triangle-up', color='#00FF00', size=15), name='買入'), row=1, col=1)
-                
-                # 💡 修復的地方在這裡：原本寫成 sells.index，現在修正回 sell_pts.index
                 fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.03, mode='markers', marker=dict(symbol='triangle-down', color='#FF4B4B', size=15), name='賣出'), row=1, col=1)
                 
                 vol_colors = ['#d62728' if row['Close'] < row['Open'] else '#2ca02c' for idx, row in df.iterrows()]
@@ -223,7 +228,7 @@ elif app_mode == "🚀 AI 自動巡航掃描":
     inv_map = {"日K (1d)": "1d", "15分K (15m)": "15m", "5分K (5m)": "5m"}
     scan_interval_val = inv_map[scan_interval_choice]
 
-    selected_strats = st.sidebar.multiselect("策略多選", STRATEGIES, default=["纏論簡化版 (MACD 底背馳)"])
+    selected_strats = st.sidebar.multiselect("策略多選", STRATEGIES, default=["纏論核心 (底背離+二買策略)"])
     is_auto = st.sidebar.toggle("啟用自動輪巡", value=True)
     categories = list(SCAN_POOLS.keys())
     current_cat = categories[st.session_state['scan_index']] if is_auto else st.sidebar.selectbox("指定板塊", categories)
