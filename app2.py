@@ -37,12 +37,7 @@ def save_record_to_csv(new_df):
     else:
         new_df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
 
-# --- 股票清單與策略 ---
-TW_STOCKS = {
-    "✍️ 自訂輸入": "", "2330.TW - 台積電": "2330.TW", "2317.TW - 鴻海": "2317.TW", 
-    "2454.TW - 聯發科": "2454.TW", "NVDA - 輝達": "NVDA", "TSLA - 特斯拉": "TSLA"
-}
-
+# --- 股票雷達池 ---
 SCAN_POOLS = {
     "🏆 權值核心": {"2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科", "2382.TW": "廣達", "2881.TW": "富邦金"},
     "💻 AI 半導體": {"3231.TW": "緯創", "2356.TW": "英業達", "2376.TW": "技嘉", "3037.TW": "欣興", "6669.TW": "緯穎"},
@@ -59,6 +54,16 @@ SCAN_POOLS = {
     "💰 熱門 ETF": {"0056.TW": "元大高股息", "00878.TW": "國泰永續高股息", "00929.TW": "復華台灣科技優息", "00713.TW": "元大台灣高息低波"}
 }
 
+# 💡 自動將掃描池裡的所有股票加進深度分析的下拉選單中
+TW_STOCKS = {"✍️ 自訂輸入": ""}
+for cat, stocks in SCAN_POOLS.items():
+    for tkr, name in stocks.items():
+        TW_STOCKS[f"{tkr} - {name}"] = tkr
+TW_STOCKS.update({"NVDA - 輝達": "NVDA", "TSLA - 特斯拉": "TSLA", "AAPL - 蘋果": "AAPL"})
+
+# 建立代碼與名稱的快速查詢字典
+TICKER_NAME_MAP = {v: k.split(" - ")[1] if " - " in k else "" for k, v in TW_STOCKS.items() if v}
+
 STRATEGIES = [
     "均線黃金交叉 (20MA & 50MA)", "RSI 超買超賣 (30買/70賣)", 
     "MACD 黃金交叉/死亡交叉", "纏論核心 (底背離+二買策略)",
@@ -72,6 +77,16 @@ def get_latest_price(ticker_str):
         fast = tkr.fast_info
         return fast.last_price, (fast.last_price - fast.previous_close), ((fast.last_price - fast.previous_close)/fast.previous_close*100)
     except: return None, None, None
+
+def get_company_name(ticker):
+    ticker_up = ticker.upper()
+    if ticker_up in TICKER_NAME_MAP:
+        return TICKER_NAME_MAP[ticker_up]
+    try:
+        # 如果是自訂輸入的冷門股，透過 API 抓取名稱
+        return yf.Ticker(ticker_up).info.get('shortName', '')
+    except:
+        return ""
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_stock_data(ticker, start, end, interval="1d"):
@@ -94,7 +109,7 @@ def calculate_indicators(df):
     df['MACD_Hist'] = df['MACD'] - df['Signal_Line']
     return df
 
-# 💡 完美還原 v10.0 的原汁原味邏輯與參數
+# 完美還原 v10.0 的邏輯
 def generate_signals(df, strategy_choice):
     df_bt = df.copy()
     df_bt['Signal'] = np.nan 
@@ -112,16 +127,13 @@ def generate_signals(df, strategy_choice):
         df_bt.loc[df_bt['MACD'] <= df_bt['Signal_Line'], 'Signal'] = 0
         
     elif strategy_choice == "纏論核心 (底背離+二買策略)":
-        # 1. 偵測底背離 (一買)
         low_20 = df_bt['Low'].rolling(window=20).min()
         hist_min_20 = df_bt['MACD_Hist'].rolling(window=20).min()
         div_buy = (df_bt['Low'] <= low_20) & (df_bt['MACD_Hist'] > hist_min_20.shift(1))
         
-        # 2. 偵測二買 (回踩不破底且 MACD 金叉)
         last_low = df_bt['Low'].rolling(window=30).min().shift(5)
         sec_buy = (df_bt['Low'] > last_low) & (df_bt['MACD'] > df_bt['Signal_Line']) & (df_bt['MACD'].shift(1) < df_bt['Signal_Line'].shift(1))
         
-        # 3. 💡 找回失落的 v10.0 偵測頂背離 (一賣)
         high_20 = df_bt['High'].rolling(window=20).max()
         hist_max_20 = df_bt['MACD_Hist'].rolling(window=20).max()
         div_sell = (df_bt['High'] >= high_20) & (df_bt['MACD_Hist'] < hist_max_20.shift(1))
@@ -160,11 +172,11 @@ def run_backtest(df, strategy_choice, sl_pct, tp_pct, initial_capital=100000):
     return df_bt.fillna(initial_capital)
 
 # --- 介面設定 ---
-st.set_page_config(page_title="AI 股票戰艦 v20.0", layout="wide")
+st.set_page_config(page_title="AI 股票戰艦 v21.0", layout="wide")
 app_mode = st.sidebar.radio("切換模式", ["🔍 單股深度分析", "🚀 AI 自動巡航掃描"])
 
 if app_mode == "🔍 單股深度分析":
-    st.title("📊 智能股票深度分析 (v10參數回歸完美版)")
+    st.title("📊 智能股票深度分析 (日期與名稱優化版)")
     st.sidebar.header("1. 分析設定")
     sel = st.sidebar.selectbox("快速選擇股票", list(TW_STOCKS.keys()))
     ticker = st.sidebar.text_input("代碼", value="2330.TW") if sel == "✍️ 自訂輸入" else TW_STOCKS[sel]
@@ -173,13 +185,20 @@ if app_mode == "🔍 單股深度分析":
     inv_map = {"日K (1d)": "1d", "15分K (15m)": "15m", "5分K (5m)": "5m"}
     interval_val = inv_map[interval_choice]
 
-    p_map = {"1年": 365, "6個月": 180, "1個月": 30, "10日": 10, "5日": 5}
-    p_sel = st.sidebar.selectbox("查詢期間", list(p_map.keys()), index=1)
+    # 💡 修復：找回所有日期選項，並加入動態預設值
+    p_map = {
+        "3年": 1095, "1年": 365, "6個月": 180, "3個月": 90, "1個月": 30, 
+        "20日": 20, "10日": 10, "5日": 5, "1日": 1
+    }
+    # 如果是日K，預設選 1年(index 1)；如果是分K，預設選 5日(index 7)
+    default_index = 1 if interval_val == "1d" else 7 
+    p_sel = st.sidebar.selectbox("查詢期間", list(p_map.keys()), index=default_index)
     
     end_d = datetime.now()
     start_d = end_d - timedelta(days=p_map[p_sel])
     if interval_val in ["5m", "15m"] and (end_d - start_d).days > 59:
         start_d = end_d - timedelta(days=59)
+        st.sidebar.warning("⚠️ 分K線最多支援近 60 天資料，已修正開始日期。")
 
     st.sidebar.markdown("---")
     strat = st.sidebar.selectbox("交易策略", STRATEGIES)
@@ -188,7 +207,12 @@ if app_mode == "🔍 單股深度分析":
     if st.sidebar.button("開始深度分析"):
         with st.spinner('AI 分析中...'):
             cp, ch, cpct = get_latest_price(ticker)
-            if cp: st.metric(f"⚡ {ticker.upper()} 最新報價", f"{cp:.2f}", f"{ch:.2f} ({cpct:.2f}%)")
+            
+            # 💡 查詢並顯示公司名稱
+            comp_name = get_company_name(ticker)
+            display_name = f" - {comp_name}" if comp_name else ""
+            
+            if cp: st.metric(f"⚡ {ticker.upper()}{display_name} 最新報價", f"{cp:.2f}", f"{ch:.2f} ({cpct:.2f}%)")
             
             df = fetch_stock_data(ticker, start_d, end_d, interval=interval_val)
             if not df.empty:
@@ -211,7 +235,7 @@ if app_mode == "🔍 單股深度分析":
                 
                 vol_colors = ['#d62728' if row['Close'] < row['Open'] else '#2ca02c' for idx, row in df.iterrows()]
                 fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name='成交量'), row=2, col=1)
-                st.plotly_chart(fig.update_layout(height=800, xaxis_rangeslider_visible=False, title=f"{ticker.upper()} 量價走勢圖"), use_container_width=True)
+                st.plotly_chart(fig.update_layout(height=800, xaxis_rangeslider_visible=False, title=f"{ticker.upper()}{display_name} 量價走勢圖"), use_container_width=True)
 
                 st.subheader("⏱️ 回測資金曲線")
                 fig_v = go.Figure()
